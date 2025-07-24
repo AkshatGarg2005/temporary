@@ -4,6 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import StatCard from "./StatCard";
 import DualAxisChart from "./DualAxisChart";
 
+const API =
+  process.env.REACT_APP_API_ROOT || "http://127.0.0.1:8000"; // ← NEW
+
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [weather, setWeather] = useState(null);
@@ -29,7 +32,7 @@ export default function Dashboard() {
   // ---------- system‑stats fetch ----------
   const fetchStats = useCallback(async () => {
     try {
-      const j = await fetch("http://127.0.0.1:8000/system_stats").then((r) =>
+      const j = await fetch(`${API}/system_stats`).then((r) =>
         r.json()
       );
       setStats(j);
@@ -43,7 +46,7 @@ export default function Dashboard() {
 
   // ---------- weather via backend proxy ----------
   const fetchWeather = useCallback((lat, lon) => {
-    fetch(`http://127.0.0.1:8000/weather?lat=${lat}&lon=${lon}`)
+    fetch(`${API}/weather?lat=${lat}&lon=${lon}`)
       .then((r) => r.json())
       .then((j) =>
         setWeather({
@@ -62,7 +65,7 @@ export default function Dashboard() {
       ambient_temp: ambient,
       device_state: state,
     };
-    const j = await fetch("http://127.0.0.1:8000/advisory", {
+    const j = await fetch(`${API}/advisory`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
