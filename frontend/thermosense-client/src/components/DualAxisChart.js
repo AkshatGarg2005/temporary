@@ -8,9 +8,6 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-/**
- * data = [{ name: 'Now', battery: 40, ambient: 35 }]
- */
 export default function DualAxisChart({ data }) {
   return (
     <div className="chart-wrapper">

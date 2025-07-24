@@ -2,29 +2,38 @@ import { useEffect, useState, useCallback } from "react";
 import StatCard from "./StatCard";
 import DualAxisChart from "./DualAxisChart";
 
-const OPENWX_KEY = "fd81503191483c84f5c6b38525dd9634";
-
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [weather, setWeather] = useState(null);
   const [advisory, setAdvisory] = useState(null);
 
-  // -------- fetchers -------
+  // ---------- system‑stats fetch ----------
   const fetchStats = useCallback(async () => {
-    const j = await fetch("http://127.0.0.1:8000/system_stats").then((r) =>
-      r.json()
-    );
-    setStats(j);
+    try {
+      const j = await fetch("http://127.0.0.1:8000/system_stats").then((r) =>
+        r.json()
+      );
+      setStats(j);
+    } catch {
+      console.error("stats fetch failed");
+    }
   }, []);
 
+  // ---------- weather via backend proxy ----------
   const fetchWeather = useCallback((lat, lon) => {
-    fetch(
-      `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${OPENWX_KEY}`
-    )
+    fetch(`http://127.0.0.1:8000/weather?lat=${lat}&lon=${lon}`)
       .then((r) => r.json())
-      .then(setWeather);
+      .then((j) =>
+        setWeather({
+          name: j.name,
+          temp: j.temp,
+          main: j.condition,
+        })
+      )
+      .catch(() => console.error("weather fetch failed"));
   }, []);
 
+  // ---------- advisory fetch ----------
   const fetchAdvisory = useCallback(async (deviceTemp, ambient, state) => {
     const payload = {
       battery_temp: deviceTemp,
@@ -39,31 +48,31 @@ export default function Dashboard() {
     setAdvisory(j);
   }, []);
 
-  // -------- polling -------
+  // ---------- polling for stats ----------
   useEffect(() => {
     fetchStats();
     const id = setInterval(fetchStats, 30000);
     return () => clearInterval(id);
   }, [fetchStats]);
 
-  // -------- geo once -------
+  // ---------- geolocation once ----------
   useEffect(() => {
     navigator.geolocation.getCurrentPosition(
       (pos) => fetchWeather(pos.coords.latitude, pos.coords.longitude),
-      () => fetchWeather(23.2599, 77.4126)
+      () => fetchWeather(23.2599, 77.4126) // fallback: Bhopal, MP
     );
   }, [fetchWeather]);
 
-  // -------- advisory whenever both pieces ready -------
+  // ---------- advisory whenever both pieces ready ----------
   useEffect(() => {
     if (!stats || !weather) return;
     const state = stats.charging ? "charging" : "idle";
     const deviceTemp =
-      stats.battery_temp ?? stats.cpu_temp ?? weather.main.temp; // fallback
-    fetchAdvisory(deviceTemp, weather.main.temp, state);
+      stats.battery_temp ?? stats.cpu_temp ?? weather.temp /* fallback */;
+    fetchAdvisory(deviceTemp, weather.temp, state);
   }, [stats, weather, fetchAdvisory]);
 
-  // -------- helpers -------
+  // ---------- helpers ----------
   const pressureColour = (lvl) =>
     lvl === "Critical"
       ? "#d32f2f"
@@ -73,7 +82,6 @@ export default function Dashboard() {
       ? "#e4c441"
       : "#1c7c1c"; // Nominal
 
-  // -------- UI -------
   return (
     <div className="container">
       <h1>ThermoSense Dashboard</h1>
@@ -82,6 +90,7 @@ export default function Dashboard() {
 
       {stats && (
         <>
+          {/* ------ top grid ------------------------------------------------ */}
           <div className="grid">
             <StatCard
               title="Battery"
@@ -124,15 +133,17 @@ export default function Dashboard() {
               value={`${stats.mem_percent.toFixed(1)} %`}
               sub="System"
             />
+
             {weather && (
               <StatCard
                 title={`Weather (${weather.name})`}
-                value={`${weather.main.temp.toFixed(1)} °C`}
-                sub={weather.weather[0].main}
+                value={`${weather.temp.toFixed(1)} °C`}
+                sub={weather.main}
               />
             )}
           </div>
 
+          {/* ------ advisory block ---------------------------------------- */}
           {advisory && (
             <>
               <h2>
@@ -150,10 +161,17 @@ export default function Dashboard() {
                 </span>
               </h2>
               <p>{advisory.natural_language_tip}</p>
-              {advisory.optional_action && <p>👉 {advisory.optional_action}</p>}
+              {advisory.optional_action && (
+                <p>👉 {advisory.optional_action}</p>
+              )}
+              <p style={{ fontSize: "0.8rem", marginTop: 2 }}>
+                ML impact score:&nbsp;
+                {advisory.predicted_health_impact.toFixed(5)}
+              </p>
             </>
           )}
 
+          {/* ------ chart -------------------------------------------------- */}
           {stats && weather && (
             <DualAxisChart
               data={[
@@ -162,12 +180,8 @@ export default function Dashboard() {
                   battery:
                     stats.battery_temp ??
                     stats.cpu_temp ??
-                    (stats.thermal_pressure
-                      ? { Nominal: 35, Elevated: 45, Serious: 55, Critical: 65 }[
-                          stats.thermal_pressure
-                        ]
-                      : 0),
-                  ambient: weather.main.temp,
+                    0 /* fallback if absolutely none */,
+                  ambient: weather.temp,
                 },
               ]}
             />
