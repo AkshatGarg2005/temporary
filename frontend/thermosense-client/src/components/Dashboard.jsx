@@ -1,3 +1,5 @@
+// Path: frontend/thermosense-client/src/components/Dashboard.jsx
+
 import { useEffect, useState, useCallback } from "react";
 import StatCard from "./StatCard";
 import DualAxisChart from "./DualAxisChart";
@@ -6,6 +8,23 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [weather, setWeather] = useState(null);
   const [advisory, setAdvisory] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [theme, setTheme] = useState('dark');
+  const [lastUpdate, setLastUpdate] = useState(new Date());
+
+  // Initialize theme from saved preference
+  useEffect(() => {
+    const savedTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+    setTheme(savedTheme);
+    document.documentElement.setAttribute('data-theme', savedTheme);
+  }, []);
+
+  // Toggle theme
+  const toggleTheme = () => {
+    const newTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+  };
 
   // ---------- system‑stats fetch ----------
   const fetchStats = useCallback(async () => {
@@ -14,8 +33,11 @@ export default function Dashboard() {
         r.json()
       );
       setStats(j);
+      setLastUpdate(new Date());
+      setIsLoading(false);
     } catch {
       console.error("stats fetch failed");
+      setIsLoading(false);
     }
   }, []);
 
@@ -82,93 +104,201 @@ export default function Dashboard() {
       ? "#e4c441"
       : "#1c7c1c"; // Nominal
 
+  const getAlertIcon = (level) => {
+    switch (level) {
+      case "danger":
+        return "⚠️";
+      case "warning":
+        return "⚡";
+      default:
+        return "✅";
+    }
+  };
+
+  const formatUptime = () => {
+    const now = new Date();
+    const diff = now - lastUpdate;
+    const seconds = Math.floor(diff / 1000);
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ago`;
+  };
+
+  const getPlatformIcon = (platform) => {
+    switch(platform?.toLowerCase()) {
+      case 'darwin': return '🍎';
+      case 'windows': return '🪟';
+      case 'linux': return '🐧';
+      default: return '💻';
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="container">
+        <h1>ThermoSense Dashboard</h1>
+        <div className="loading">Loading system data...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="container">
-      <h1>ThermoSense Dashboard</h1>
+      {/* Theme Toggle Button */}
+      <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
+        <div className="theme-toggle-track">
+          <div className="theme-toggle-thumb"></div>
+          <div className="theme-icons">
+            <span className="theme-icon dark-icon">🌙</span>
+            <span className="theme-icon light-icon">☀️</span>
+          </div>
+        </div>
+      </button>
 
-      {!stats && <p>Loading system data…</p>}
+      <h1>ThermoSense Dashboard</h1>
 
       {stats && (
         <>
-          {/* ------ top grid ------------------------------------------------ */}
+          {/* ------ top grid - now with 8 cards for symmetry -------------- */}
           <div className="grid">
+            {/* Row 1 - 4 cards */}
             <StatCard
-              title="Battery"
+              title="Battery Level"
               value={
                 stats.battery_percent != null
-                  ? `${stats.battery_percent} %`
+                  ? `${stats.battery_percent}%`
                   : "N/A"
               }
-              sub={`Status: ${stats.charging ? "Charging" : "Idle"}`}
+              sub={`${stats.charging ? "⚡ Charging" : "🔋 Idle"}`}
+              icon="🔋"
+              gradient={stats.charging ? "warning" : "safe"}
+              style={{ "--card-index": 0 }}
             />
 
             {stats.battery_temp != null ? (
               <StatCard
-                title="Battery Temp"
-                value={`${stats.battery_temp.toFixed(1)} °C`}
+                title="Battery Temperature"
+                value={`${stats.battery_temp.toFixed(1)}°`}
                 sub="Battery sensor"
+                unit="C"
+                icon="🌡️"
+                gradient={stats.battery_temp > 40 ? "danger" : stats.battery_temp > 30 ? "warning" : "safe"}
+                style={{ "--card-index": 1 }}
               />
             ) : stats.cpu_temp != null ? (
               <StatCard
-                title="CPU Temp"
-                value={`${stats.cpu_temp.toFixed(1)} °C`}
-                sub="Unavailable on M‑series"
+                title="CPU Temperature"
+                value={`${stats.cpu_temp.toFixed(1)}°`}
+                sub="Processor temp"
+                unit="C"
+                icon="💻"
+                gradient={stats.cpu_temp > 70 ? "danger" : stats.cpu_temp > 50 ? "warning" : "safe"}
+                style={{ "--card-index": 1 }}
               />
             ) : (
               <StatCard
                 title="Thermal Pressure"
                 value={stats.thermal_pressure ?? "N/A"}
-                sub="powermetrics"
+                sub="System thermal state"
+                icon="🔥"
                 colour={pressureColour(stats.thermal_pressure)}
+                style={{ "--card-index": 1 }}
               />
             )}
 
             <StatCard
-              title="CPU Load"
-              value={`${stats.cpu_load.toFixed(1)} %`}
-              sub="1 s avg"
+              title="CPU Load"
+              value={`${stats.cpu_load.toFixed(1)}%`}
+              sub="Processing usage"
+              icon="⚙️"
+              gradient={stats.cpu_load > 80 ? "danger" : stats.cpu_load > 50 ? "warning" : "safe"}
+              style={{ "--card-index": 2 }}
             />
+            
             <StatCard
-              title="RAM Use"
-              value={`${stats.mem_percent.toFixed(1)} %`}
-              sub="System"
+              title="Memory Usage"
+              value={`${stats.mem_percent.toFixed(1)}%`}
+              sub="RAM utilization"
+              icon="💾"
+              gradient={stats.mem_percent > 80 ? "danger" : stats.mem_percent > 60 ? "warning" : "safe"}
+              style={{ "--card-index": 3 }}
             />
 
+            {/* Row 2 - 4 cards */}
             {weather && (
               <StatCard
-                title={`Weather (${weather.name})`}
-                value={`${weather.temp.toFixed(1)} °C`}
-                sub={weather.main}
+                title={`Weather`}
+                value={`${weather.temp.toFixed(1)}°`}
+                sub={`${weather.main} • ${weather.name}`}
+                unit="C"
+                icon="☁️"
+                className="weather-card"
+                style={{ "--card-index": 4 }}
               />
             )}
+
+            <StatCard
+              title="System Platform"
+              value={getPlatformIcon(stats.platform)}
+              sub={stats.platform || "Unknown"}
+              icon="🖥️"
+              className="platform-card"
+              style={{ "--card-index": 5 }}
+            />
+
+            <StatCard
+              title="Last Update"
+              value={formatUptime()}
+              sub="Auto-refresh: 30s"
+              icon="🔄"
+              className="system-card"
+              style={{ "--card-index": 6 }}
+            />
+
+            <StatCard
+              title="System Status"
+              value={advisory ? getAlertIcon(advisory.alert_level) : "🔍"}
+              sub={advisory ? advisory.alert_level.toUpperCase() : "Analyzing..."}
+              icon="📊"
+              gradient={
+                advisory?.alert_level === "danger" ? "danger" : 
+                advisory?.alert_level === "warning" ? "warning" : 
+                "safe"
+              }
+              style={{ "--card-index": 7 }}
+            />
           </div>
 
           {/* ------ advisory block ---------------------------------------- */}
           {advisory && (
-            <>
+            <div className="advisory-panel">
               <h2>
-                Alert&nbsp;
+                System Advisory
                 <span
-                  className={
+                  className={`alert-badge ${
                     advisory.alert_level === "danger"
                       ? "alert-danger"
                       : advisory.alert_level === "warning"
                       ? "alert-warning"
                       : "alert-safe"
-                  }
+                  }`}
                 >
-                  ({advisory.alert_level.toUpperCase()})
+                  {getAlertIcon(advisory.alert_level)} {advisory.alert_level}
                 </span>
               </h2>
               <p>{advisory.natural_language_tip}</p>
               {advisory.optional_action && (
-                <p>👉 {advisory.optional_action}</p>
+                <div className="action-item">
+                  <span style={{ fontSize: "1.5rem" }}>👉</span>
+                  <span>{advisory.optional_action}</span>
+                </div>
               )}
-              <p style={{ fontSize: "0.8rem", marginTop: 2 }}>
-                ML impact score:&nbsp;
-                {advisory.predicted_health_impact.toFixed(5)}
+              <p className="impact-score">
+                ML Health Impact Score: {advisory.predicted_health_impact.toFixed(5)}
               </p>
-            </>
+            </div>
           )}
 
           {/* ------ chart -------------------------------------------------- */}
@@ -176,7 +306,7 @@ export default function Dashboard() {
             <DualAxisChart
               data={[
                 {
-                  name: "Now",
+                  name: "Current",
                   battery:
                     stats.battery_temp ??
                     stats.cpu_temp ??
