@@ -1,132 +1,160 @@
 """
-ThermoSense – self‑contained advisory module
--------------------------------------------
-• Trains a RandomForest on thermosense_test_data.csv
-• Uses a lightweight T5 model to turn numbers into advice text
-• Exposes advisory_service(input_row)  -> dict(JSON‑serialisable)
+ThermoSense advisory engine  – 27 Jul 2025
+-----------------------------------------
+• Trains Random‑Forest on thermosense_test_data.csv
+• Features: battery_temp, ambient_temp, hour_of_day, device_state (one‑hot)
+• Computes model thresholds (75th / 90th percentile) at startup
+• Alert logic:
+      Danger  – battery_temp ≥ 50 °C OR impact ≥ p90
+      Warning – battery_temp ≥ 40 °C OR impact ≥ p75
+      Safe    – otherwise
+• Advice sentences are deterministic templates (no GPT truncation)
 """
 
-import json, warnings, pathlib
+import pathlib, json, warnings
 import pandas as pd
-import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
-from transformers import T5Tokenizer, T5ForConditionalGeneration
-import torch
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 # ---------------------------------------------------------------------------
-# 0.  Locate the CSV (same folder) – no hard‑coded absolute path!
+# 0.  Load CSV & feature‑engineer
 # ---------------------------------------------------------------------------
-BASE_DIR = pathlib.Path(__file__).resolve().parent
-CSV_PATH = BASE_DIR / "thermosense_test_data.csv"
+BASE = pathlib.Path(__file__).resolve().parent
+CSV  = BASE / "thermosense_test_data.csv"
 
-# 1.  Load & prep data -------------------------------------------------------
-df = pd.read_csv(CSV_PATH)
+df = pd.read_csv(CSV, parse_dates=["timestamp"])
+df["hour_of_day"] = df["timestamp"].dt.hour
 
-features = ["battery_temp", "ambient_temp", "device_state"]
-target   = "measured_health_impact"
+FEATURES = ["battery_temp", "ambient_temp", "hour_of_day", "device_state"]
+TARGET   = "measured_health_impact"
 
 enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-state_enc = enc.fit_transform(df[["device_state"]])
-state_df  = pd.DataFrame(state_enc,
-                         columns=enc.get_feature_names_out(["device_state"]))
+state_ohe = enc.fit_transform(df[["device_state"]])
+state_df  = pd.DataFrame(
+    state_ohe, columns=enc.get_feature_names_out(["device_state"])
+)
 
-X = pd.concat([df[["battery_temp", "ambient_temp"]].reset_index(drop=True),
-               state_df.reset_index(drop=True)], axis=1)
-y = df[target]
+X = pd.concat(
+    [
+        df[["battery_temp", "ambient_temp", "hour_of_day"]].reset_index(drop=True),
+        state_df.reset_index(drop=True),
+    ],
+    axis=1,
+)
+y = df[TARGET]
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42
 )
 
-model = RandomForestRegressor(n_estimators=120, random_state=42)
-model.fit(X_train, y_train)
+rf = RandomForestRegressor(n_estimators=140, random_state=42)
+rf.fit(X_train, y_train)
 
-# 2.  Tiny T5 for advice text ------------------------------------------------
-tokenizer = T5Tokenizer.from_pretrained("t5-small", legacy=False)
-generator = T5ForConditionalGeneration.from_pretrained("t5-small")
-generator.eval()
+# ---------------------------------------------------------------------------
+# 1.  Impact thresholds derived from training data
+# ---------------------------------------------------------------------------
+THRESH_WARN   = float(y.quantile(0.75))   # 75th‑percentile ≈ “elevated”
+THRESH_DANGER = float(y.quantile(0.90))   # 90th‑percentile ≈ “critical”
 
-FEW_SHOT = (
-    "Given the data below, output a **concise, actionable battery‑safety tip**.\n"
-    "Example:\n"
-    "- Battery: 45.0°C, Ambient: 32.0°C, State: Charging, Impact: 0.128 -> "
-    "\"Danger: Unplug the charger and let the device cool down immediately.\"\n\n"
-)
+print(f"[ThermoSense] impact thresholds – Warning ≥ {THRESH_WARN:.3f}, "
+      f"Danger ≥ {THRESH_DANGER:.3f}")
 
-def _nl_advice(batt, amb, state, impact) -> str:
-    prompt = (
-        FEW_SHOT +
-        f"Battery: {batt:.1f}°C, Ambient: {amb:.1f}°C, "
-        f"State: {state.capitalize()}, Impact: {impact:.3f} ->"
-    )
-    ids = tokenizer.encode(prompt, return_tensors="pt", truncation=True)
-    with torch.no_grad():
-        out = generator.generate(ids, max_length=40)
-    return tokenizer.decode(out[0], skip_special_tokens=True)
-
-# 3.  Helper to map impact -> alert level -----------------------------------
-def _alert(impact: float) -> str:
-    if impact > 0.07:   # tweak thresholds as you like
+# ---------------------------------------------------------------------------
+# 2.  Alert logic
+# ---------------------------------------------------------------------------
+def _alert(bat_c: float, impact: float) -> str:
+    if bat_c >= 50 or impact >= THRESH_DANGER:
         return "danger"
-    if impact > 0.04:
+    if bat_c >= 40 or impact >= THRESH_WARN:
         return "warning"
     return "safe"
 
-# 4.  **Public** function ----------------------------------------------------
-def advisory_service(input_row: dict) -> dict:
+# ---------------------------------------------------------------------------
+# 3.  Advice templates
+# ---------------------------------------------------------------------------
+def _advice(level: str, bat: float, amb: float, state: str) -> str:
+    Δ = bat - amb
+    if level == "danger":
+        return (
+            f"Battery temperature is {bat:.1f} °C "
+            f"({Δ:+.1f} °C over ambient) while {state}. "
+            "Unplug the charger or stop heavy tasks and let the device cool immediately."
+        )
+    if level == "warning":
+        return (
+            f"Battery temperature is {bat:.1f} °C "
+            f"({Δ:+.1f} °C over ambient). "
+            "Reduce workload and monitor the temperature."
+        )
+    return (
+        f"Battery temperature is {bat:.1f} °C, within the safe range. "
+        "Normal operation is fine."
+    )
+
+# ---------------------------------------------------------------------------
+# 4.  Public function used by FastAPI
+# ---------------------------------------------------------------------------
+def advisory_service(inp: dict) -> dict:
     """
-    input_row = {
-        "battery_temp": float,
-        "ambient_temp": float,
-        "device_state": "charging|idle|discharging"
+    inp = {
+        battery_temp : float,
+        ambient_temp : float,
+        device_state : str,
+        hour_of_day  : int | None (backend fills with local time if missing)
     }
     """
-    df_live = pd.DataFrame([input_row])
+    if "hour_of_day" not in inp or inp["hour_of_day"] is None:
+        from datetime import datetime
+        inp["hour_of_day"] = datetime.now().hour
 
-    # one‑hot
-    live_state = enc.transform(df_live[["device_state"]])
-    live_state_df = pd.DataFrame(
-        live_state, columns=enc.get_feature_names_out(["device_state"])
+    df_live = pd.DataFrame([inp])
+
+    state_enc = enc.transform(df_live[["device_state"]])
+    state_df  = pd.DataFrame(
+        state_enc, columns=enc.get_feature_names_out(["device_state"])
     )
 
     X_live = pd.concat(
-        [df_live[["battery_temp", "ambient_temp"]].reset_index(drop=True),
-         live_state_df.reset_index(drop=True)],
-        axis=1
+        [
+            df_live[["battery_temp", "ambient_temp", "hour_of_day"]]
+            .reset_index(drop=True),
+            state_df.reset_index(drop=True),
+        ],
+        axis=1,
     ).reindex(columns=X_train.columns, fill_value=0)
 
-    impact = float(model.predict(X_live)[0])
-    alert  = _alert(impact)
-    tip    = _nl_advice(
-        input_row["battery_temp"],
-        input_row["ambient_temp"],
-        input_row["device_state"],
-        impact
+    impact = float(rf.predict(X_live)[0])
+
+    level  = _alert(inp["battery_temp"], impact)
+    tip    = _advice(
+        level,
+        inp["battery_temp"],
+        inp["ambient_temp"],
+        inp["device_state"],
+    )
+    action = (
+        "Stop using the device and let it cool."
+        if level == "danger"
+        else "Consider giving the device a short rest."
+        if level == "warning"
+        else None
     )
 
-    if alert == "danger":
-        action = "Stop using the device and let it cool."
-    elif alert == "warning":
-        action = "Reduce screen brightness and workload."
-    else:
-        action = None
-
     return {
-        "alert_level": alert,
+        "alert_level": level,
         "natural_language_tip": tip,
         "optional_action": action,
-        "predicted_health_impact": round(impact, 5)
+        "predicted_health_impact": round(impact, 5),
     }
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    demo_input = {
-        "battery_temp": 42.3,
-        "ambient_temp": 35.0,
-        "device_state": "charging"
+    demo = {
+        "battery_temp": 30.4,
+        "ambient_temp": 24.2,
+        "device_state": "idle",
     }
-    print(json.dumps(advisory_service(demo_input), indent=2))
+    print(json.dumps(advisory_service(demo), indent=2))
