@@ -36,7 +36,7 @@ thermosense/
 Create `backend/.env` (never commit it):
 
 ```env
-OPENWEATHER_API_KEY=fd81503191483c84f5c6b38525dd9634
+OPENWEATHER_API_KEY=your_api_key
 ```
 
 ---
