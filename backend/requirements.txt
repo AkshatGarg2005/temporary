@@ -1,9 +1,11 @@
 pandas
 numpy
-scikit-learn
-transformers
+scikit-learn==1.4.2
 torch
-fastapi
-uvicorn[standard]
+transformers
 sentencepiece
 protobuf>=4.25,<5
+psutil
+requests
+fastapi
+uvicorn[standard]
