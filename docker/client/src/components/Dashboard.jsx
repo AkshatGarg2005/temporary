@@ -3,9 +3,13 @@
 import { useEffect, useState, useCallback } from "react";
 import StatCard from "./StatCard";
 import DualAxisChart from "./DualAxisChart";
+import HistoryPanel from "./HistoryPanel";
 
 const API =
-  process.env.REACT_APP_API_ROOT || "http://127.0.0.1:8000"; // ← NEW
+  process.env.REACT_APP_API_ROOT || "http://127.0.0.1:8000";
+
+const HISTORY_KEY = "thermosense_history";
+const MAX_HISTORY_ITEMS = 50; // Maximum number of history items to store
 
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
@@ -14,6 +18,8 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [theme, setTheme] = useState('dark');
   const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [history, setHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   // Initialize theme from saved preference
   useEffect(() => {
@@ -22,11 +28,81 @@ export default function Dashboard() {
     document.documentElement.setAttribute('data-theme', savedTheme);
   }, []);
 
+  // Load history from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedHistory = localStorage.getItem(HISTORY_KEY);
+      if (savedHistory) {
+        const parsed = JSON.parse(savedHistory);
+        setHistory(parsed);
+      }
+    } catch (error) {
+      console.error("Failed to load history from localStorage:", error);
+    }
+  }, []);
+
+  // Save history to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    } catch (error) {
+      console.error("Failed to save history to localStorage:", error);
+    }
+  }, [history]);
+
   // Toggle theme
   const toggleTheme = () => {
     const newTheme = theme === 'dark' ? 'light' : 'dark';
     setTheme(newTheme);
     document.documentElement.setAttribute('data-theme', newTheme);
+  };
+
+  // Add data point to history
+  const addToHistory = useCallback((statsData, weatherData, advisoryData) => {
+    const historyItem = {
+      id: Date.now(),
+      timestamp: new Date().toISOString(),
+      stats: {
+        battery_percent: statsData.battery_percent,
+        battery_temp: statsData.battery_temp,
+        cpu_temp: statsData.cpu_temp,
+        thermal_pressure: statsData.thermal_pressure,
+        cpu_load: statsData.cpu_load,
+        mem_percent: statsData.mem_percent,
+        charging: statsData.charging,
+        platform: statsData.platform
+      },
+      weather: weatherData ? {
+        name: weatherData.name,
+        temp: weatherData.temp,
+        main: weatherData.main
+      } : null,
+      advisory: advisoryData ? {
+        alert_level: advisoryData.alert_level,
+        natural_language_tip: advisoryData.natural_language_tip,
+        optional_action: advisoryData.optional_action,
+        predicted_health_impact: advisoryData.predicted_health_impact
+      } : null
+    };
+
+    setHistory(prev => {
+      // Keep only the most recent MAX_HISTORY_ITEMS
+      const newHistory = [historyItem, ...prev].slice(0, MAX_HISTORY_ITEMS);
+      return newHistory;
+    });
+  }, []);
+
+  // Clear history
+  const clearHistory = () => {
+    if (window.confirm("Are you sure you want to clear all history?")) {
+      setHistory([]);
+      localStorage.removeItem(HISTORY_KEY);
+    }
+  };
+
+  // Delete single history item
+  const deleteHistoryItem = (id) => {
+    setHistory(prev => prev.filter(item => item.id !== id));
   };
 
   // ---------- system‑stats fetch ----------
@@ -38,23 +114,29 @@ export default function Dashboard() {
       setStats(j);
       setLastUpdate(new Date());
       setIsLoading(false);
+      
+      // Add to history if we have all data
+      if (weather && advisory) {
+        addToHistory(j, weather, advisory);
+      }
     } catch {
       console.error("stats fetch failed");
       setIsLoading(false);
     }
-  }, []);
+  }, [weather, advisory, addToHistory]);
 
   // ---------- weather via backend proxy ----------
   const fetchWeather = useCallback((lat, lon) => {
     fetch(`${API}/weather?lat=${lat}&lon=${lon}`)
       .then((r) => r.json())
-      .then((j) =>
-        setWeather({
+      .then((j) => {
+        const weatherData = {
           name: j.name,
           temp: j.temp,
           main: j.condition,
-        })
-      )
+        };
+        setWeather(weatherData);
+      })
       .catch(() => console.error("weather fetch failed"));
   }, []);
 
@@ -65,12 +147,16 @@ export default function Dashboard() {
       ambient_temp: ambient,
       device_state: state,
     };
-    const j = await fetch(`${API}/advisory`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).then((r) => r.json());
-    setAdvisory(j);
+    try {
+      const j = await fetch(`${API}/advisory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then((r) => r.json());
+      setAdvisory(j);
+    } catch (error) {
+      console.error("Advisory fetch failed:", error);
+    }
   }, []);
 
   // ---------- polling for stats ----------
@@ -138,6 +224,27 @@ export default function Dashboard() {
     }
   };
 
+  // Get chart data from history
+  const getChartData = () => {
+    const currentData = stats && weather ? [{
+      name: "Current",
+      battery: stats.battery_temp ?? stats.cpu_temp ?? 0,
+      ambient: weather.temp,
+    }] : [];
+
+    // Add last 10 history items for chart
+    const historicalData = history.slice(0, 10).reverse().map((item, index) => ({
+      name: new Date(item.timestamp).toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      }),
+      battery: item.stats.battery_temp ?? item.stats.cpu_temp ?? 0,
+      ambient: item.weather?.temp ?? 0,
+    }));
+
+    return [...historicalData, ...currentData];
+  };
+
   if (isLoading) {
     return (
       <div className="container">
@@ -160,13 +267,51 @@ export default function Dashboard() {
         </div>
       </button>
 
+      {/* History Toggle Button */}
+      <button 
+        className="history-toggle"
+        onClick={() => setShowHistory(!showHistory)}
+        style={{
+          position: 'fixed',
+          top: '20px',
+          right: '160px',
+          background: 'var(--card-bg)',
+          backdropFilter: 'blur(var(--blur-amount))',
+          WebkitBackdropFilter: 'blur(var(--blur-amount))',
+          border: '1px solid var(--card-border)',
+          borderRadius: '50px',
+          padding: '12px 24px',
+          cursor: 'pointer',
+          transition: 'var(--transition-smooth)',
+          zIndex: 1000,
+          boxShadow: 'var(--shadow-soft)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          color: 'var(--text-primary)',
+          fontSize: '0.875rem',
+          fontWeight: '500',
+          textTransform: 'uppercase',
+          letterSpacing: '1px',
+        }}
+        onMouseOver={(e) => {
+          e.currentTarget.style.transform = 'scale(1.05)';
+          e.currentTarget.style.boxShadow = 'var(--shadow-soft), var(--shadow-glow)';
+        }}
+        onMouseOut={(e) => {
+          e.currentTarget.style.transform = 'scale(1)';
+          e.currentTarget.style.boxShadow = 'var(--shadow-soft)';
+        }}
+      >
+        📊 History ({history.length})
+      </button>
+
       <h1>ThermoSense Dashboard</h1>
 
       {stats && (
         <>
-          {/* ------ top grid - now with 8 cards for symmetry -------------- */}
+          {/* ------ top grid - 8 cards -------------- */}
           <div className="grid">
-            {/* Row 1 - 4 cards */}
             <StatCard
               title="Battery Level"
               value={
@@ -229,7 +374,6 @@ export default function Dashboard() {
               style={{ "--card-index": 3 }}
             />
 
-            {/* Row 2 - 4 cards */}
             {weather && (
               <StatCard
                 title={`Weather`}
@@ -304,20 +448,19 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* ------ chart -------------------------------------------------- */}
-          {stats && weather && (
-            <DualAxisChart
-              data={[
-                {
-                  name: "Current",
-                  battery:
-                    stats.battery_temp ??
-                    stats.cpu_temp ??
-                    0 /* fallback if absolutely none */,
-                  ambient: weather.temp,
-                },
-              ]}
+          {/* ------ History Panel -------------------------------------------------- */}
+          {showHistory && (
+            <HistoryPanel 
+              history={history}
+              onClose={() => setShowHistory(false)}
+              onClear={clearHistory}
+              onDelete={deleteHistoryItem}
             />
+          )}
+
+          {/* ------ chart with historical data ------------------------------------ */}
+          {stats && weather && (
+            <DualAxisChart data={getChartData()} />
           )}
         </>
       )}
