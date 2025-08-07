@@ -1,13 +1,9 @@
 pandas
 numpy
 scikit-learn==1.4.2
-torch
-transformers
-sentencepiece
-protobuf>=4.25,<5
 psutil
 requests
 fastapi
 uvicorn[standard]
 python-dotenv
-requests
+google-generativeai
